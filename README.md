@@ -1,6 +1,6 @@
 # a-tab
 
-一个基于 OneNav 网址数据、参考 mtab 设计的高度可自定义书签导航页 WordPress 插件。
+一个基于 OneNav 网址数据、设计的高度可自定义书签导航页 WordPress 插件。
 
 ## 功能特性
 
