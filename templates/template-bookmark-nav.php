@@ -34,10 +34,10 @@ try {
     <link rel="preload" href="<?php echo esc_url(BM_PLUGIN_URL . 'assets/js/bookmark-nav.js'); ?>" as="script">
     <?php wp_head(); ?>
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+        body, html { margin: 0; padding: 0; height: 100%; }
         body.admin-bar .bm-nav-page { top: 32px; height: calc(100vh - 32px); }
         @media (max-width: 782px) { body.admin-bar .bm-nav-page { top: 46px; height: calc(100vh - 46px); } }
-        .bm-nav-page{width:100vw;min-height:100vh;overflow-x:hidden;position:relative}
+        .bm-nav-page{width:100vw;min-height:100vh;overflow-x:hidden;overflow-y:auto;position:relative}
         .bm-wallpaper{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;background-size:cover;background-position:center;background-repeat:no-repeat}
         .bm-sidebar{position:fixed;top:0;left:0;width:72px;height:100vh;z-index:200;display:flex;flex-direction:column;padding:16px 0;overflow-y:auto;overflow-x:hidden;background:rgba(255,255,255,0.08);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border-right:1px solid rgba(255,255,255,0.12)}
         .bm-main-content{margin-left:72px;position:relative;z-index:1;min-height:100vh}

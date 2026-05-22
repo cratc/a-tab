@@ -108,12 +108,149 @@ const BM_App = (() => {
     };
 
     const DragSort = {
+        touchDragElement: null,
+        touchDragClone: null,
+        touchStartX: 0,
+        touchStartY: 0,
+        touchCurrentX: 0,
+        touchCurrentY: 0,
+        isTouchDragging: false,
+        touchLongPressTimer: null,
+        isTouchDevice: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+
         init() {
             document.addEventListener('dragstart', e => this.onDragStart(e));
             document.addEventListener('dragover', e => this.onDragOver(e));
             document.addEventListener('drop', e => this.onDrop(e));
             document.addEventListener('dragend', e => this.onDragEnd(e));
+            if (this.isTouchDevice) {
+                this.initTouchDrag();
+            }
         },
+
+        initTouchDrag() {
+            document.addEventListener('touchstart', e => this.onTouchDragStart(e), { passive: false });
+            document.addEventListener('touchmove', e => this.onTouchDragMove(e), { passive: false });
+            document.addEventListener('touchend', e => this.onTouchDragEnd(e), { passive: true });
+            document.addEventListener('touchcancel', e => this.onTouchDragEnd(e), { passive: true });
+        },
+
+        onTouchDragStart(e) {
+            if (state.isDragging || this.isTouchDragging) return;
+            const item = e.target.closest('.bm-item:not(.bm-item--folder)');
+            if (!item) return;
+            if (e.target.closest('.bm-context-menu') || e.target.closest('.bm-modal-overlay')) return;
+            this.touchStartX = e.touches[0].clientX;
+            this.touchStartY = e.touches[0].clientY;
+            this.touchDragElement = item;
+            this.touchLongPressTimer = setTimeout(() => {
+                this.startTouchDrag(e);
+            }, 300);
+        },
+
+        startTouchDrag(e) {
+            if (!this.touchDragElement) return;
+            this.isTouchDragging = true;
+            state.isDragging = true;
+            state.dragItem = this.touchDragElement;
+            this.touchDragElement.classList.add('bm-item--dragging');
+            this.createTouchClone();
+            if (navigator.vibrate) {
+                navigator.vibrate(50);
+            }
+        },
+
+        createTouchClone() {
+            if (!this.touchDragElement) return;
+            this.touchDragClone = this.touchDragElement.cloneNode(true);
+            this.touchDragClone.style.position = 'fixed';
+            this.touchDragClone.style.pointerEvents = 'none';
+            this.touchDragClone.style.zIndex = '9999';
+            this.touchDragClone.style.opacity = '0.85';
+            this.touchDragClone.style.transform = 'scale(1.05)';
+            this.touchDragClone.style.boxShadow = '0 8px 32px rgba(0,0,0,0.3)';
+            this.updateTouchClonePosition();
+            document.body.appendChild(this.touchDragClone);
+        },
+
+        updateTouchClonePosition() {
+            if (!this.touchDragClone) return;
+            const rect = this.touchDragElement.getBoundingClientRect();
+            const offsetX = this.touchCurrentX - this.touchStartX;
+            const offsetY = this.touchCurrentY - this.touchStartY;
+            this.touchDragClone.style.left = (rect.left + offsetX) + 'px';
+            this.touchDragClone.style.top = (rect.top + offsetY) + 'px';
+        },
+
+        onTouchDragMove(e) {
+            if (this.touchLongPressTimer && !this.isTouchDragging) {
+                const dx = e.touches[0].clientX - this.touchStartX;
+                const dy = e.touches[0].clientY - this.touchStartY;
+                if (Math.sqrt(dx * dx + dy * dy) > 10) {
+                    clearTimeout(this.touchLongPressTimer);
+                    this.touchLongPressTimer = null;
+                }
+                return;
+            }
+            if (!this.isTouchDragging || !this.touchDragElement) return;
+            e.preventDefault();
+            this.touchCurrentX = e.touches[0].clientX;
+            this.touchCurrentY = e.touches[0].clientY;
+            this.updateTouchClonePosition();
+            const elemBelow = document.elementFromPoint(this.touchCurrentX, this.touchCurrentY);
+            if (!elemBelow) return;
+            document.querySelectorAll('.bm-item--folder-hover').forEach(el => el.classList.remove('bm-item--folder-hover'));
+            const folderItem = elemBelow.closest('.bm-item--folder');
+            if (folderItem) {
+                folderItem.classList.add('bm-item--folder-hover');
+                return;
+            }
+            const grid = elemBelow.closest('.bm-canvas-grid');
+            if (!grid) return;
+            const afterElement = this.getDragAfterElement(grid, this.touchCurrentY, this.touchCurrentX);
+            if (this.touchDragElement) {
+                if (afterElement == null) {
+                    grid.appendChild(this.touchDragElement);
+                } else {
+                    grid.insertBefore(this.touchDragElement, afterElement);
+                }
+            }
+        },
+
+        onTouchDragEnd(e) {
+            if (this.touchLongPressTimer) {
+                clearTimeout(this.touchLongPressTimer);
+                this.touchLongPressTimer = null;
+            }
+            if (!this.isTouchDragging) return;
+            if (this.touchDragClone) {
+                this.touchDragClone.remove();
+                this.touchDragClone = null;
+            }
+            if (this.touchDragElement) {
+                this.touchDragElement.classList.remove('bm-item--dragging');
+            }
+            document.querySelectorAll('.bm-item--folder-hover').forEach(el => el.classList.remove('bm-item--folder-hover'));
+            const elemBelow = document.elementFromPoint(this.touchCurrentX, this.touchCurrentY);
+            if (elemBelow) {
+                const folderItem = elemBelow.closest('.bm-item--folder');
+                if (folderItem && this.touchDragElement) {
+                    const groupId = folderItem.getAttribute('data-group-id');
+                    const itemId = this.touchDragElement.getAttribute('data-id');
+                    if (groupId && itemId) {
+                        CanvasManager.moveToGroup(itemId, groupId);
+                        PageSwitcher.loadPageData(state.activePageId);
+                    }
+                } else {
+                    this.saveOrder();
+                }
+            }
+            this.isTouchDragging = false;
+            state.isDragging = false;
+            state.dragItem = null;
+            this.touchDragElement = null;
+        },
+
         onDragStart(e) {
             const item = e.target.closest('.bm-item:not(.bm-item--folder)');
             if (!item) return;
@@ -199,19 +336,6 @@ const BM_App = (() => {
         init() {
             const pages = document.querySelectorAll('.bm-sidebar-page[data-page-id]');
             pages.forEach(p => { p.addEventListener('click', () => this.switchTo(p.getAttribute('data-page-id'))); });
-            const mainContent = document.getElementById('bmMainContent');
-            if (mainContent) {
-                let wheelTimer = null;
-                mainContent.addEventListener('wheel', e => {
-                    if (e.target.closest('.bm-settings-panel') || e.target.closest('.bm-modal-overlay') || e.target.closest('.bm-dock-bar')) return;
-                    const dy = e.deltaY;
-                    if (Math.abs(dy) < 30) return;
-                    if (wheelTimer) return;
-                    wheelTimer = setTimeout(() => { wheelTimer = null; }, 600);
-                    e.preventDefault();
-                    this.handleSwipe(dy > 0 ? 'next' : 'prev');
-                }, { passive: false });
-            }
             this.initTouchSwipe();
         },
         initTouchSwipe() {
@@ -226,7 +350,7 @@ const BM_App = (() => {
                 if (e.target.closest('.bm-settings-panel') || e.target.closest('.bm-modal-overlay') || e.target.closest('.bm-dock-bar')) return;
                 const dx = e.changedTouches[0].clientX - startX;
                 const dy = e.changedTouches[0].clientY - startY;
-                if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 60) {
+                if (Math.abs(dx) > Math.abs(dy) * 2 && Math.abs(dx) > 80) {
                     this.handleSwipe(dx < 0 ? 'next' : 'prev');
                 }
             }, { passive: true });
@@ -238,6 +362,9 @@ const BM_App = (() => {
             const navPage = document.querySelector('.bm-nav-page');
             if (navPage) navPage.setAttribute('data-active-page-id', pageId);
             this.loadPageData(pageId);
+            if (typeof updatePageIndicator === 'function') {
+                updatePageIndicator();
+            }
         },
         async loadPageData(pageId) {
             try {
@@ -311,11 +438,77 @@ const BM_App = (() => {
     };
 
     const ContextMenu = {
+        touchTimer: null,
+        touchStartPos: null,
+        touchElement: null,
+        isTouchDevice: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+
         init() {
             document.addEventListener('contextmenu', e => this.handle(e));
             document.addEventListener('click', e => { if (!e.target.closest('.bm-context-menu')) this.hide(); });
             document.addEventListener('keydown', e => { if (e.key === 'Escape') this.hide(); });
+            if (this.isTouchDevice) {
+                this.initTouchHandlers();
+            }
         },
+
+        initTouchHandlers() {
+            document.addEventListener('touchstart', e => this.onTouchStart(e), { passive: true });
+            document.addEventListener('touchmove', e => this.onTouchMove(e), { passive: true });
+            document.addEventListener('touchend', e => this.onTouchEnd(e), { passive: true });
+        },
+
+        onTouchStart(e) {
+            if (e.target.closest('.bm-context-menu') || e.target.closest('.bm-modal-overlay') || e.target.closest('.bm-settings-panel')) return;
+            const cardEl = e.target.closest('.bm-item');
+            const folderEl = e.target.closest('.bm-item--folder');
+            const touchTarget = folderEl || cardEl;
+            if (!touchTarget && !e.target.closest('.bm-nav-page')) return;
+            this.touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            this.touchElement = touchTarget;
+            this.touchTimer = setTimeout(() => {
+                this.handleTouchLongPress(e, touchTarget);
+            }, 500);
+        },
+
+        onTouchMove(e) {
+            if (!this.touchTimer) return;
+            if (!this.touchStartPos) return;
+            const dx = e.touches[0].clientX - this.touchStartPos.x;
+            const dy = e.touches[0].clientY - this.touchStartPos.y;
+            if (Math.sqrt(dx * dx + dy * dy) > 10) {
+                clearTimeout(this.touchTimer);
+                this.touchTimer = null;
+            }
+        },
+
+        onTouchEnd(e) {
+            if (this.touchTimer) {
+                clearTimeout(this.touchTimer);
+                this.touchTimer = null;
+            }
+        },
+
+        handleTouchLongPress(e, touchTarget) {
+            this.touchTimer = null;
+            const fakeEvent = {
+                clientX: this.touchStartPos ? this.touchStartPos.x : 0,
+                clientY: this.touchStartPos ? this.touchStartPos.y : 0,
+                target: e.target,
+                preventDefault: () => {},
+                stopPropagation: () => {}
+            };
+            if (touchTarget) {
+                if (touchTarget.classList.contains('bm-item--folder')) {
+                    this.showFolderMenu(fakeEvent, touchTarget);
+                } else {
+                    this.showCardMenu(fakeEvent, touchTarget);
+                }
+            } else if (e.target.closest('.bm-nav-page') && !e.target.closest('.bm-sidebar') && !e.target.closest('.bm-dock-bar')) {
+                this.showBlankMenu(fakeEvent);
+            }
+        },
+
         handle(e) {
             const folderEl = e.target.closest('.bm-item--folder');
             if (folderEl) { e.preventDefault(); this.showFolderMenu(e, folderEl); return; }
@@ -395,10 +588,46 @@ const BM_App = (() => {
         render(html, x, y) {
             let w = document.getElementById('bmContextMenuWrapper');
             if (!w) { w = document.createElement('div'); w.id = 'bmContextMenuWrapper'; w.className = 'bm-context-menu-wrapper'; document.body.appendChild(w); }
-            w.innerHTML = html; w.style.display = 'block'; w.style.pointerEvents = 'auto';
+            const isMobile = window.innerWidth <= 767;
+            let finalHtml = html;
+            if (isMobile) {
+                finalHtml = html.replace('</div></div>', '</div><div class="bm-context-divider"></div><div class="bm-context-item bm-context-cancel-btn" data-action="cancel"><span>取消</span></div></div>');
+            }
+            w.innerHTML = finalHtml; w.style.display = 'block'; w.style.pointerEvents = 'auto';
             const m = w.querySelector('.bm-context-menu');
-            if (m) { m.style.position = 'absolute'; m.style.left = x + 'px'; m.style.top = y + 'px';
-                requestAnimationFrame(() => { let nx = x, ny = y; if (x + m.offsetWidth > window.innerWidth - 8) nx = window.innerWidth - m.offsetWidth - 8; if (y + m.offsetHeight > window.innerHeight - 8) ny = window.innerHeight - m.offsetHeight - 8; if (nx < 0) nx = 0; if (ny < 0) ny = 0; m.style.left = nx + 'px'; m.style.top = ny + 'px'; });
+            if (m) {
+                if (isMobile) {
+                    m.style.position = 'fixed';
+                    m.style.left = '0';
+                    m.style.right = '0';
+                    m.style.bottom = '0';
+                    m.style.top = 'auto';
+                    const cancelBtn = m.querySelector('.bm-context-cancel-btn');
+                    if (cancelBtn) {
+                        cancelBtn.addEventListener('click', () => this.hide());
+                    }
+                    m.querySelectorAll('.has-submenu').forEach(submenu => {
+                        submenu.addEventListener('click', (ev) => {
+                            if (!ev.target.closest('.bm-context-submenu') && !ev.target.closest('.bm-context-submenu--horizontal')) {
+                                ev.stopPropagation();
+                                submenu.classList.toggle('is-open');
+                            }
+                        });
+                    });
+                } else {
+                    m.style.position = 'absolute';
+                    m.style.left = x + 'px';
+                    m.style.top = y + 'px';
+                    requestAnimationFrame(() => {
+                        let nx = x, ny = y;
+                        if (x + m.offsetWidth > window.innerWidth - 8) nx = window.innerWidth - m.offsetWidth - 8;
+                        if (y + m.offsetHeight > window.innerHeight - 8) ny = window.innerHeight - m.offsetHeight - 8;
+                        if (nx < 0) nx = 0;
+                        if (ny < 0) ny = 0;
+                        m.style.left = nx + 'px';
+                        m.style.top = ny + 'px';
+                    });
+                }
             }
             state.activeContextMenu = w;
         },
@@ -1253,6 +1482,9 @@ const BM_App = (() => {
         ContextMenu.init(); DragSort.init(); PageSwitcher.init();
         SettingsPanel.init(); Sidebar.init(); Dock.init(); Theme.init();
         CanvasManager.init(); BookmarkPicker.init(); MemoCard.init();
+        initEdgeSwipe(pageEl);
+        initModalSwipeToClose();
+        initPageIndicator();
         if (bmVars.initData) {
             applyInitData(bmVars.initData);
             delete bmVars.initData;
@@ -1275,6 +1507,117 @@ const BM_App = (() => {
         if (ngsb) ngsb.addEventListener('click', async () => { const f = document.getElementById('bmNewGroupForm'); if (!f) return; const t = f.querySelector('[name="title"]')?.value.trim(); if (!t) { Toast.showToast('请输入分组名称', 'error'); return; } try { await api('POST', '/groups', { title: t, icon: f.querySelector('[name="icon"]')?.value.trim() || '', page_id: state.activePageId }); Toast.showToast('分组创建成功', 'success'); Modal.closeModal('bmNewGroupModal'); location.reload(); } catch(e) { Toast.showToast('创建失败', 'error'); } });
         const esb = document.getElementById('bmEditSaveBtn');
         if (esb) esb.addEventListener('click', async () => { const f = document.getElementById('bmEditForm'); if (!f || !state.currentEditItem) return; const d = { title: f.querySelector('[name="title"]')?.value.trim(), url: f.querySelector('[name="url"]')?.value.trim(), describe: f.querySelector('[name="describe"]')?.value.trim(), icon: f.querySelector('[name="icon"]')?.value.trim(), text_icon: f.querySelector('[name="text_icon"]')?.value.trim(), bg_color: f.querySelector('[name="bg_color"]')?.value, open_in_iframe: f.querySelector('[name="open_in_iframe"]')?.checked ? 1 : 0 }; await CanvasManager.editItem(state.currentEditItem, d); Toast.showToast('保存成功', 'success'); Modal.closeModal('bmEditModal'); });
+    }
+
+    function initEdgeSwipe(pageEl) {
+        if (window.innerWidth > 767) return;
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let isEdgeSwipe = false;
+        const edgeThreshold = 30;
+        pageEl.addEventListener('touchstart', e => {
+            if (e.target.closest('.bm-sidebar') || e.target.closest('.bm-modal-overlay') || e.target.closest('.bm-settings-panel')) return;
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+            isEdgeSwipe = touchStartX < edgeThreshold || touchStartX > window.innerWidth - edgeThreshold;
+        }, { passive: true });
+        pageEl.addEventListener('touchend', e => {
+            if (!isEdgeSwipe) return;
+            const touchEndX = e.changedTouches[0].clientX;
+            const touchEndY = e.changedTouches[0].clientY;
+            const dx = touchEndX - touchStartX;
+            const dy = touchEndY - touchStartY;
+            if (Math.abs(dy) > Math.abs(dx)) return;
+            const sidebar = document.getElementById('bmSidebar');
+            if (!sidebar) return;
+            const isOpen = sidebar.classList.contains('is-open');
+            if (touchStartX < edgeThreshold && dx > 60 && !isOpen) {
+                sidebar.classList.add('is-open');
+            } else if (touchStartX > window.innerWidth - edgeThreshold && dx < -60 && !isOpen) {
+                sidebar.classList.add('is-open');
+            } else if (isOpen && dx < -60) {
+                sidebar.classList.remove('is-open');
+            }
+            isEdgeSwipe = false;
+        }, { passive: true });
+    }
+
+    function initModalSwipeToClose() {
+        const modals = document.querySelectorAll('.bm-modal-overlay');
+        modals.forEach(modal => {
+            let touchStartY = 0;
+            let isSwiping = false;
+            modal.addEventListener('touchstart', e => {
+                const content = modal.querySelector('.bm-modal-content, .bm-memo-modal');
+                if (!content) return;
+                const rect = content.getBoundingClientRect();
+                if (e.touches[0].clientY < rect.top + 50) {
+                    touchStartY = e.touches[0].clientY;
+                    isSwiping = true;
+                }
+            }, { passive: true });
+            modal.addEventListener('touchmove', e => {
+                if (!isSwiping) return;
+                const content = modal.querySelector('.bm-modal-content, .bm-memo-modal');
+                if (!content) return;
+                const dy = e.touches[0].clientY - touchStartY;
+                if (dy > 0) {
+                    content.style.transform = `translateY(${dy}px)`;
+                    content.style.transition = 'none';
+                }
+            }, { passive: true });
+            modal.addEventListener('touchend', e => {
+                if (!isSwiping) return;
+                const content = modal.querySelector('.bm-modal-content, .bm-memo-modal');
+                if (!content) return;
+                const dy = e.changedTouches[0].clientY - touchStartY;
+                content.style.transition = '';
+                content.style.transform = '';
+                if (dy > 100) {
+                    modal.classList.remove('is-open');
+                }
+                isSwiping = false;
+            }, { passive: true });
+        });
+    }
+
+    function initPageIndicator() {
+        const indicatorContainer = document.createElement('div');
+        indicatorContainer.className = 'bm-page-indicator';
+        indicatorContainer.id = 'bmPageIndicator';
+        const mainContent = document.getElementById('bmMainContent');
+        if (mainContent) {
+            mainContent.appendChild(indicatorContainer);
+        }
+        updatePageIndicator();
+    }
+
+    function updatePageIndicator() {
+        const indicator = document.getElementById('bmPageIndicator');
+        if (!indicator) return;
+        if (window.innerWidth > 767) {
+            indicator.style.display = 'none';
+            return;
+        }
+        const pages = state.pages || [];
+        if (pages.length <= 1) {
+            indicator.style.display = 'none';
+            return;
+        }
+        indicator.style.display = 'flex';
+        const activeId = state.activePageId;
+        let html = '';
+        pages.forEach(page => {
+            const isActive = String(page.id) === String(activeId);
+            html += `<div class="bm-page-dot${isActive ? ' is-active' : ''}" data-page-id="${page.id}"></div>`;
+        });
+        indicator.innerHTML = html;
+        indicator.querySelectorAll('.bm-page-dot').forEach(dot => {
+            dot.addEventListener('click', () => {
+                const pageId = dot.getAttribute('data-page-id');
+                PageSwitcher.switchTo(pageId);
+            });
+        });
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
