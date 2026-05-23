@@ -3,6 +3,7 @@ const BM_App = (() => {
         pageId: null,
         activePageId: null,
         userLoggedIn: false,
+        userId: 0,
         settings: {},
         groups: [],
         navItems: {},
@@ -45,14 +46,205 @@ const BM_App = (() => {
         }
     };
 
-    const LocalStorage = {
-        KEY: 'bm_local_bookmarks',
-        init() { try { const s = localStorage.getItem(this.KEY); if (s) state.localBookmarks = JSON.parse(s); } catch(e) { state.localBookmarks = []; } },
-        addItem(b) { b.id = 'local_' + Date.now(); b.source_type = 'local'; state.localBookmarks.push(b); this.persist(); return b; },
-        removeItem(id) { state.localBookmarks = state.localBookmarks.filter(b => b.id !== id); this.persist(); },
-        updateItem(id, d) { const i = state.localBookmarks.findIndex(b => b.id === id); if (i >= 0) Object.assign(state.localBookmarks[i], d); this.persist(); },
-        persist() { localStorage.setItem(this.KEY, JSON.stringify(state.localBookmarks)); },
-        getAll() { return state.localBookmarks; }
+    const GuestData = {
+        KEY: 'bm_guest_data',
+        load() { try { const raw = localStorage.getItem(this.KEY); return raw ? JSON.parse(raw) : null; } catch(e) { return null; } },
+        save(data) { try { localStorage.setItem(this.KEY, JSON.stringify(data)); } catch(e) { console.error('GuestData.save failed:', e); } },
+        getEmpty() { return { pages: [], groups: [], nav_items: {}, settings: {}, dock_items: [] }; },
+        migrateOldLocalData() {
+            if (localStorage.getItem(this.KEY)) return;
+            var ob = [], op = [], og = [], os = {};
+            try { ob = JSON.parse(localStorage.getItem('bm_local_bookmarks') || '[]'); } catch(e) {}
+            try { op = JSON.parse(localStorage.getItem('bm_local_pages') || '[]'); } catch(e) {}
+            try { og = JSON.parse(localStorage.getItem('bm_local_groups') || '[]'); } catch(e) {}
+            try { os = JSON.parse(localStorage.getItem('bm_local_settings') || '{}'); } catch(e) {}
+            if (ob.length === 0 && op.length === 0 && og.length === 0) return;
+            var ni = {};
+            ob.forEach(function(item) { var k = (!item.group_id || item.group_id === 0 || item.group_id === '0') ? 'ungrouped' : String(item.group_id); if (!ni[k]) ni[k] = []; ni[k].push(item); });
+            this.save({ pages: op, groups: og, nav_items: ni, settings: os, dock_items: [] });
+            localStorage.removeItem('bm_local_bookmarks');
+            localStorage.removeItem('bm_local_pages');
+            localStorage.removeItem('bm_local_groups');
+            localStorage.removeItem('bm_local_settings');
+        },
+        addItem(item) {
+            var data = this.load() || this.getEmpty();
+            var k = (!item.group_id || item.group_id === 0 || item.group_id === '0') ? 'ungrouped' : String(item.group_id);
+            if (!data.nav_items[k]) data.nav_items[k] = [];
+            data.nav_items[k].push(item);
+            this.save(data);
+            if (!state.navItems[k]) state.navItems[k] = [];
+            state.navItems[k].push(item);
+        },
+        removeItem(itemId) {
+            var data = this.load() || this.getEmpty();
+            for (var k in data.nav_items) { data.nav_items[k] = data.nav_items[k].filter(function(i) { return i.id !== itemId; }); }
+            this.save(data);
+            for (var k2 in state.navItems) { state.navItems[k2] = state.navItems[k2].filter(function(i) { return i.id !== itemId; }); }
+        },
+        updateItem(itemId, updates) {
+            var data = this.load() || this.getEmpty();
+            var movedItem = null;
+            var oldKey = null;
+            for (var k in data.nav_items) {
+                var idx = data.nav_items[k].findIndex(function(i) { return i.id === itemId; });
+                if (idx >= 0) {
+                    movedItem = data.nav_items[k].splice(idx, 1)[0];
+                    oldKey = k;
+                    break;
+                }
+            }
+            if (movedItem) {
+                Object.assign(movedItem, updates);
+                var newKey = (updates.group_id !== undefined) ? String(updates.group_id) : oldKey;
+                if (!data.nav_items[newKey]) data.nav_items[newKey] = [];
+                data.nav_items[newKey].push(movedItem);
+            }
+            this.save(data);
+            var stateItem = null;
+            var stateOldKey = null;
+            for (var k2 in state.navItems) {
+                var idx2 = state.navItems[k2].findIndex(function(i) { return i.id === itemId; });
+                if (idx2 >= 0) {
+                    stateItem = state.navItems[k2].splice(idx2, 1)[0];
+                    stateOldKey = k2;
+                    break;
+                }
+            }
+            if (stateItem) {
+                Object.assign(stateItem, updates);
+                var stateNewKey = (updates.group_id !== undefined) ? String(updates.group_id) : stateOldKey;
+                if (!state.navItems[stateNewKey]) state.navItems[stateNewKey] = [];
+                state.navItems[stateNewKey].push(stateItem);
+            }
+        },
+        addPage(page) {
+            var data = this.load() || this.getEmpty();
+            data.pages.push(page);
+            this.save(data);
+            state.pages.push(page);
+        },
+        addGroup(group) {
+            var data = this.load() || this.getEmpty();
+            data.groups.push(group);
+            this.save(data);
+            state.groups.push(group);
+        },
+        updateGroup(groupId, updates) {
+            var data = this.load() || this.getEmpty();
+            var idx = data.groups.findIndex(function(g) { return g.id === groupId; });
+            if (idx >= 0) Object.assign(data.groups[idx], updates);
+            this.save(data);
+            var si = state.groups.findIndex(function(g) { return g.id === groupId; });
+            if (si >= 0) Object.assign(state.groups[si], updates);
+        },
+        removeGroup(groupId) {
+            var data = this.load() || this.getEmpty();
+            data.groups = data.groups.filter(function(g) { return g.id !== groupId; });
+            delete data.nav_items[String(groupId)];
+            this.save(data);
+            state.groups = state.groups.filter(function(g) { return g.id !== groupId; });
+            delete state.navItems[String(groupId)];
+        },
+        saveSettings(values) {
+            var data = this.load() || this.getEmpty();
+            Object.assign(data.settings, values);
+            this.save(data);
+            Object.assign(state.settings, values);
+        },
+        addDockItem(item) {
+            var data = this.load() || this.getEmpty();
+            if (!data.dock_items) data.dock_items = [];
+            data.dock_items.push(item);
+            this.save(data);
+        },
+        removeDockItem(itemId) {
+            var data = this.load() || this.getEmpty();
+            data.dock_items = (data.dock_items || []).filter(function(d) { return d.id !== itemId; });
+            this.save(data);
+        },
+        hasData() {
+            var data = this.load();
+            if (!data) return false;
+            var ni = data.nav_items || {};
+            for (var k in ni) { if (ni[k].length > 0) return true; }
+            if ((data.pages || []).length > 0) return true;
+            if ((data.groups || []).length > 0) return true;
+            return false;
+        },
+        async syncToServer() {
+            var data = this.load() || this.getEmpty();
+            var memo = localStorage.getItem('bm_memo_pad') || '';
+            var allItems = [];
+            for (var k in data.nav_items) { allItems = allItems.concat(data.nav_items[k]); }
+            try {
+                var res = await api('POST', '/sync-local', { bookmarks: allItems, memo: memo, settings: data.settings, pages: data.pages, groups: data.groups });
+                if (res.ok) {
+                    localStorage.removeItem(this.KEY);
+                    localStorage.removeItem('bm_memo_pad');
+                    location.reload();
+                } else { Toast.showToast('同步失败', 'error'); }
+            } catch(e) { Toast.showToast('同步失败', 'error'); }
+        }
+    };
+
+    const GuidePage = {
+        shouldShow() {
+            if (state.userLoggedIn) {
+                return state.pages.length === 0 && Object.keys(state.navItems).length === 0;
+            }
+            if (GuestData.hasData()) return false;
+            try {
+                var raw = localStorage.getItem('bm_memo_pad');
+                if (raw) { var d = JSON.parse(raw); if (d && d.notes && d.notes.length > 0) return false; }
+            } catch(e) {}
+            return true;
+        },
+        render() {
+            var buttons = '';
+            if (!state.userLoggedIn) {
+                buttons = '<div style="display:flex;gap:12px;justify-content:center;margin-top:24px;flex-wrap:wrap;">' +
+                    '<button id="bmGuideDismiss" style="padding:10px 28px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.25);border-radius:10px;color:var(--bm-card-text-color,#fff);font-size:14px;cursor:pointer;transition:background 0.2s;">我知道了</button>' +
+                    '<a href="' + (state.currentUser && state.currentUser.login_url || '') + '" style="padding:10px 28px;background:var(--bm-primary-color,#4f46e5);border-radius:10px;color:#fff;text-decoration:none;font-size:14px;transition:opacity 0.2s;">登录使用</a>' +
+                    '</div>' +
+                    '<p style="margin:16px 0 0;font-size:12px;color:var(--bm-card-text-color,#fff);opacity:0.5;">⚠️ 未登录数据保存在本地，容易丢失</p>';
+            } else {
+                buttons = '<div style="margin-top:24px;">' +
+                    '<button id="bmGuideDismiss" style="padding:12px 36px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;box-shadow:0 4px 15px rgba(102,126,234,0.4);">开始使用 →</button>' +
+                    '</div>' +
+                    '<p style="margin:16px 0 0;font-size:12px;color:var(--bm-card-text-color,#fff);opacity:0.5;">💡 你的数据仅属于你，其他用户不可见</p>';
+            }
+            return '<div class="bm-guide-page" style="display:flex;align-items:center;justify-content:center;min-height:60vh;padding:24px;">' +
+                '<div style="background:rgba(255,255,255,0.12);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:20px;border:1px solid rgba(255,255,255,0.18);padding:48px 40px;max-width:480px;width:100%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.2);">' +
+                '<div style="font-size:48px;margin-bottom:16px;">👋</div>' +
+                '<h2 style="margin:0 0 8px;font-size:24px;font-weight:600;color:var(--bm-card-text-color,#fff);">欢迎使用书签导航</h2>' +
+                '<p style="margin:0 0 28px;font-size:14px;color:var(--bm-card-text-color,#fff);opacity:0.7;">快速上手，打造你的专属导航页</p>' +
+                '<div style="text-align:left;margin-bottom:0;">' +
+                '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:14px;color:var(--bm-card-text-color,#fff);opacity:0.85;"><span style="font-size:18px;">🔖</span> 右键空白处 → 添加标签</div>' +
+                '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:14px;color:var(--bm-card-text-color,#fff);opacity:0.85;"><span style="font-size:18px;">📁</span> 右键空白处 → 新建分组</div>' +
+                '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:14px;color:var(--bm-card-text-color,#fff);opacity:0.85;"><span style="font-size:18px;">🎨</span> 设置面板 → 自定义外观</div>' +
+                '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:14px;color:var(--bm-card-text-color,#fff);opacity:0.85;"><span style="font-size:18px;">📱</span> 拖拽标签 → 加入Dock栏</div>' +
+                '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;font-size:14px;color:var(--bm-card-text-color,#fff);opacity:0.85;"><span style="font-size:18px;">🔍</span> 搜索框 → 切换搜索引擎</div>' +
+                '</div>' +
+                buttons +
+                '</div></div>';
+        },
+        dismiss() {
+            if (state.userLoggedIn) {
+                api('POST', '/init-user').then(function() { location.reload(); }).catch(function() { Toast.showToast('初始化失败', 'error'); });
+            } else {
+                var defaultPage = { id: 'local_page_default', title: '默认', icon: '🏠', sort_order: 0, is_default: 1 };
+                GuestData.addPage(defaultPage);
+                state.activePageId = defaultPage.id;
+                var saved = GuestData.load();
+                if (!saved || !saved.pages || saved.pages.length === 0) {
+                    console.error('GuidePage.dismiss: GuestData.addPage failed, data not saved');
+                    state.pages.push(defaultPage);
+                }
+                Sidebar.renderPages();
+                PageSwitcher.renderPage();
+            }
+        }
     };
 
     const Clock = {
@@ -239,7 +431,7 @@ const BM_App = (() => {
                     const itemId = this.touchDragElement.getAttribute('data-id');
                     if (groupId && itemId) {
                         CanvasManager.moveToGroup(itemId, groupId);
-                        PageSwitcher.loadPageData(state.activePageId);
+                        if (state.userLoggedIn) PageSwitcher.loadPageData(state.activePageId);
                     }
                 } else {
                     this.saveOrder();
@@ -290,7 +482,7 @@ const BM_App = (() => {
                 const itemId = state.dragItem.getAttribute('data-id');
                 if (groupId && itemId) {
                     CanvasManager.moveToGroup(itemId, groupId);
-                    PageSwitcher.loadPageData(state.activePageId);
+                    if (state.userLoggedIn) PageSwitcher.loadPageData(state.activePageId);
                 }
             } else {
                 this.saveOrder();
@@ -337,6 +529,22 @@ const BM_App = (() => {
             const pages = document.querySelectorAll('.bm-sidebar-page[data-page-id]');
             pages.forEach(p => { p.addEventListener('click', () => this.switchTo(p.getAttribute('data-page-id'))); });
             this.initTouchSwipe();
+            this.initWheelSwipe();
+        },
+        initWheelSwipe() {
+            const navPage = document.querySelector('.bm-nav-page');
+            if (!navPage) return;
+            let wheelCooldown = false;
+            navPage.addEventListener('wheel', e => {
+                if (e.target.closest('.bm-settings-panel') || e.target.closest('.bm-modal-overlay') || e.target.closest('.bm-dock-bar') || e.target.closest('.bm-sidebar')) return;
+                if (wheelCooldown) return;
+                if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && Math.abs(e.deltaX) > 50) {
+                    e.preventDefault();
+                    wheelCooldown = true;
+                    this.handleSwipe(e.deltaX > 0 ? 'next' : 'prev');
+                    setTimeout(() => { wheelCooldown = false; }, 500);
+                }
+            }, { passive: false });
         },
         initTouchSwipe() {
             const mainContent = document.getElementById('bmMainContent');
@@ -367,6 +575,19 @@ const BM_App = (() => {
             }
         },
         async loadPageData(pageId) {
+            if (!state.userLoggedIn) {
+                var gd = GuestData.load();
+                if (gd) {
+                    state.groups = (gd.groups || []).filter(function(g) { return String(g.page_id) === String(pageId); });
+                    var allNavItems = gd.nav_items || {};
+                    state.navItems = {};
+                    for (var k in allNavItems) {
+                        state.navItems[k] = allNavItems[k].filter(function(item) { return !item.page_id || String(item.page_id) === String(pageId); });
+                    }
+                }
+                this.renderPage();
+                return;
+            }
             try {
                 const res = await api('GET', '/init-data?page_id=' + state.pageId + '&active_page=' + pageId);
                 if (!res.ok) throw new Error('API error');
@@ -379,12 +600,17 @@ const BM_App = (() => {
         renderPage() {
             const canvas = document.getElementById('bmCanvas');
             if (!canvas) return;
-            const folderGroups = state.groups.filter(g => g.is_folder);
-            const regularGroups = state.groups.filter(g => !g.is_folder);
-            const localItems = LocalStorage.getAll();
+            if (GuidePage.shouldShow()) {
+                canvas.innerHTML = GuidePage.render();
+                const btn = document.getElementById('bmGuideDismiss');
+                if (btn) btn.addEventListener('click', () => GuidePage.dismiss());
+                return;
+            }
+            const folderGroups = state.groups.filter(g => g.is_folder && String(g.page_id) === String(state.activePageId));
+            const regularGroups = state.groups.filter(g => !g.is_folder && String(g.page_id) === String(state.activePageId));
             const memoItems = MemoCard.getAll();
-            const ungrouped = (state.navItems && state.navItems.ungrouped) || [];
-            if (regularGroups.length === 0 && ungrouped.length === 0 && folderGroups.length === 0 && localItems.length === 0 && memoItems.length === 0) {
+            const ungrouped = ((state.navItems && state.navItems.ungrouped) || []).filter(function(item) { return !item.page_id || String(item.page_id) === String(state.activePageId); });
+            if (regularGroups.length === 0 && ungrouped.length === 0 && folderGroups.length === 0 && memoItems.length === 0) {
                 canvas.innerHTML = '<div class="bm-group-empty"><p>暂无内容，右键添加标签</p></div>';
                 return;
             }
@@ -396,7 +622,7 @@ const BM_App = (() => {
                 section.setAttribute('data-page-id', group.page_id || 0);
                 const groupItems = (state.navItems && state.navItems[group.id]) || [];
                 let html = '';
-                if (group.id > 0 && group.title) {
+                if (group.id && group.title) {
                     html += '<div class="bm-group-header"><span class="bm-group-icon">' + (group.icon || '📁') + '</span><h3 class="bm-group-title">' + group.title + '</h3><span class="bm-group-count">' + groupItems.length + '</span></div>';
                 }
                 html += '<div class="bm-canvas-grid">';
@@ -405,7 +631,7 @@ const BM_App = (() => {
                 section.innerHTML = html;
                 frag.appendChild(section);
             });
-            if (ungrouped.length > 0 || folderGroups.length > 0 || localItems.length > 0 || memoItems.length > 0) {
+            if (ungrouped.length > 0 || folderGroups.length > 0 || memoItems.length > 0) {
                 const section = document.createElement('section');
                 section.className = 'bm-group-section';
                 section.setAttribute('data-group-id', '0');
@@ -420,7 +646,6 @@ const BM_App = (() => {
                     });
                 });
                 ungrouped.forEach(item => { html += CanvasManager.renderBookmarkCard(item); });
-                localItems.forEach(item => { html += CanvasManager.renderBookmarkCard(item); });
                 memoItems.forEach(item => { html += CanvasManager.renderBookmarkCard(item); });
                 html += '</div>';
                 section.innerHTML = html;
@@ -688,11 +913,13 @@ const BM_App = (() => {
         init() {},
         async addItem(data) {
             data.page_id = data.page_id || state.activePageId;
-            if (!state.userLoggedIn || (data.source_type && data.source_type === 'local')) {
-                const item = LocalStorage.addItem(data);
+            if (!state.userLoggedIn) {
+                data.id = 'local_' + Date.now();
+                data.source_type = 'local';
+                GuestData.addItem(data);
                 PageSwitcher.renderPage();
                 Toast.showToast('已保存到本地', 'success');
-                return item;
+                return data;
             }
             try {
                 const res = await api('POST', '/nav-items', data);
@@ -704,26 +931,36 @@ const BM_App = (() => {
             } catch(e) { Toast.showToast('添加失败', 'error'); }
         },
         async removeItem(id) {
-            if (id && String(id).startsWith('local_')) { LocalStorage.removeItem(id); }
-            else if (state.userLoggedIn) { try { const res = await api('DELETE', '/nav-items/' + id); if (!res.ok) throw new Error('删除失败'); } catch(e) { Toast.showToast('删除失败: ' + e.message, 'error'); return; } }
-            const el = document.querySelector('.bm-canvas .bm-item[data-id="' + id + '"], .bm-canvas-grid .bm-item[data-id="' + id + '"]'); if (el) el.remove();
-            Toast.showToast('已删除', 'success');
+            if (!state.userLoggedIn) {
+                GuestData.removeItem(id);
+                PageSwitcher.renderPage();
+                Toast.showToast('已删除', 'success');
+                return;
+            }
+            try { const res = await api('DELETE', '/nav-items/' + id); if (!res.ok) throw new Error('删除失败'); Toast.showToast('已删除', 'success'); } catch(e) { Toast.showToast('删除失败: ' + e.message, 'error'); return; }
         },
         async editItem(id, data) {
-            if (id && String(id).startsWith('local_')) { LocalStorage.updateItem(id, data); }
-            else if (state.userLoggedIn) { try { await api('PUT', '/nav-items/' + id, data); } catch(e) {} }
+            if (!state.userLoggedIn) { GuestData.updateItem(id, data); PageSwitcher.renderPage(); return; }
+            try { await api('PUT', '/nav-items/' + id, data); } catch(e) {}
         },
         async changeLayout(id, layout) {
-            if (id && String(id).startsWith('local_')) { LocalStorage.updateItem(id, { layout }); }
-            else if (state.userLoggedIn) { try { await api('PUT', '/nav-items/' + id, { layout }); } catch(e) {} }
+            if (!state.userLoggedIn) { GuestData.updateItem(id, { layout: layout }); PageSwitcher.renderPage(); return; }
+            try { await api('PUT', '/nav-items/' + id, { layout: layout }); } catch(e) {}
             const el = document.querySelector('[data-id="' + id + '"]'); if (el) { el.className = el.className.replace(/layout-\S+/, 'layout-' + layout); el.setAttribute('data-layout', layout); }
         },
         async moveToGroup(itemId, groupId) {
-            if (itemId && String(itemId).startsWith('local_')) { LocalStorage.updateItem(itemId, { group_id: groupId }); }
-            else if (state.userLoggedIn) { try { await api('PUT', '/nav-items/' + itemId, { group_id: groupId }); } catch(e) {} }
+            if (!state.userLoggedIn) { GuestData.updateItem(itemId, { group_id: groupId }); PageSwitcher.renderPage(); return; }
+            try { await api('PUT', '/nav-items/' + itemId, { group_id: groupId }); } catch(e) {}
             const el = document.querySelector('[data-id="' + itemId + '"]'); if (el) { const t = document.querySelector('[data-group-id="' + groupId + '"] .bm-canvas-grid'); if (t) t.appendChild(el); }
         },
         async createFolder() {
+            if (!state.userLoggedIn) {
+                const group = { id: 'local_group_' + Date.now(), title: '新文件夹', icon: '📁', page_id: state.activePageId, is_folder: true, layout: '1x1', sort_order: state.groups.length };
+                GuestData.addGroup(group);
+                PageSwitcher.renderPage();
+                Toast.showToast('文件夹已保存到本地', 'success');
+                return;
+            }
             try {
                 const res = await api('POST', '/groups', { title: '新文件夹', page_id: state.activePageId, is_folder: true, layout: '1x1' });
                 if (!res.ok) throw new Error('API error');
@@ -757,9 +994,21 @@ const BM_App = (() => {
                 '<div class="bm-item-name">' + (folderData.title || '新文件夹') + '</div></div>';
         },
         async updateFolder(groupId, data) {
+            if (!state.userLoggedIn) {
+                GuestData.updateGroup(groupId, data);
+                PageSwitcher.renderPage();
+                Toast.showToast('已更新', 'success');
+                return;
+            }
             try { await api('PUT', '/groups/' + groupId, data); Toast.showToast('已更新', 'success'); PageSwitcher.loadPageData(state.activePageId); } catch(e) { Toast.showToast('更新失败', 'error'); }
         },
         async deleteFolder(groupId) {
+            if (!state.userLoggedIn) {
+                GuestData.removeGroup(groupId);
+                PageSwitcher.renderPage();
+                Toast.showToast('已删除', 'success');
+                return;
+            }
             try { await api('DELETE', '/groups/' + groupId); Toast.showToast('已删除', 'success'); PageSwitcher.loadPageData(state.activePageId); } catch(e) { Toast.showToast('删除失败', 'error'); }
         },
         openFolder(groupId) {
@@ -836,6 +1085,12 @@ const BM_App = (() => {
             });
         },
         async moveItemOutOfFolder(itemId, groupId) {
+            if (!state.userLoggedIn) {
+                GuestData.updateItem(itemId, { group_id: 0 });
+                PageSwitcher.renderPage();
+                Toast.showToast('已移出文件夹', 'success');
+                return;
+            }
             try {
                 await api('PUT', '/nav-items/' + itemId, { group_id: 0 });
                 Toast.showToast('已移出文件夹', 'success');
@@ -903,7 +1158,7 @@ const BM_App = (() => {
                 const iconHtml = item.icon ? '<img src="' + item.icon + '" alt="" loading="lazy">' : '<span class="bm-item-letter" style="background:#94a3b8;width:40px;height:40px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;color:white;font-weight:600;font-size:16px;">' + ((item.title || '?').charAt(0)) + '</span>';
                 return '<div class="bm-candidate-item" data-source-id="' + item.id + '"><div class="bm-candidate-icon">' + iconHtml + '</div><div class="bm-candidate-title">' + (item.title || '') + '</div><div class="bm-candidate-desc">' + (item.describe || item.description || '') + '</div><div class="bm-candidate-actions">' + addBtn + '</div></div>';
             }).join('');
-            grid.querySelectorAll('.bm-btn-add').forEach(btn => { btn.addEventListener('click', e => { e.stopPropagation(); this.addFromCandidate(btn.getAttribute('data-source-id'), state.groups.length > 0 ? state.groups[0].id : 0); }); });
+            grid.querySelectorAll('.bm-btn-add').forEach(btn => { btn.addEventListener('click', e => { e.stopPropagation(); this.addFromCandidate(btn.getAttribute('data-source-id'), (state.groups.find(g => !g.is_folder) || {}).id || 0); }); });
         },
         renderPagination() {
             const c = document.getElementById('bmCandidatePagination'); if (!c) return;
@@ -916,6 +1171,28 @@ const BM_App = (() => {
             c.querySelectorAll('.bm-page-btn:not(.is-disabled)').forEach(btn => { btn.addEventListener('click', () => { const p = parseInt(btn.getAttribute('data-page')); if (p >= 1 && p <= this.totalPages) this.loadOnlineCandidates(p); }); });
         },
         async addFromCandidate(sourceId, groupId) {
+            if (!state.userLoggedIn) {
+                const candidate = (state.candidates || []).find(c => c.id == sourceId);
+                if (candidate) {
+                    var item = {
+                        id: 'local_' + Date.now(),
+                        title: candidate.title || '',
+                        url: candidate.link || candidate.url || '',
+                        icon: candidate.icon || '',
+                        describe: candidate.describe || candidate.description || '',
+                        source_type: 'onenav',
+                        source_id: sourceId,
+                        group_id: groupId,
+                        page_id: state.activePageId
+                    };
+                    GuestData.addItem(item);
+                    PageSwitcher.renderPage();
+                    Toast.showToast('已保存到本地', 'success');
+                } else {
+                    Toast.showToast('未找到书签信息', 'error');
+                }
+                return;
+            }
             try { const res = await api('POST', '/nav-items', { source_type: 'onenav', source_id: sourceId, group_id: groupId, page_id: state.activePageId }); if (!res.ok) throw new Error('API error'); PageSwitcher.loadPageData(state.activePageId); Toast.showToast('添加成功', 'success'); } catch(e) { Toast.showToast('添加失败', 'error'); }
         },
         initManualForm() {
@@ -947,7 +1224,7 @@ const BM_App = (() => {
             const title = form.querySelector('[name="title"]')?.value.trim();
             const url = form.querySelector('[name="url"]')?.value.trim();
             if (!title || !url) { Toast.showToast('请填写名称和网址', 'error'); return; }
-            const data = { title, url, describe: form.querySelector('[name="describe"]')?.value.trim() || '', icon: form.querySelector('[name="icon"]')?.value.trim() || '', text_icon: form.querySelector('[name="text_icon"]')?.value.trim() || '', bg_color: form.querySelector('[name="bg_color"]')?.value || '#6366f1', open_in_iframe: form.querySelector('[name="open_in_iframe"]')?.checked ? 1 : 0, group_id: form.querySelector('[name="group_id"]')?.value || (state.groups.length > 0 ? state.groups[0].id : 0), page_id: state.activePageId, source_type: state.userLoggedIn ? 'custom' : 'local' };
+            const data = { title, url, describe: form.querySelector('[name="describe"]')?.value.trim() || '', icon: form.querySelector('[name="icon"]')?.value.trim() || '', text_icon: form.querySelector('[name="text_icon"]')?.value.trim() || '', bg_color: form.querySelector('[name="bg_color"]')?.value || '#6366f1', open_in_iframe: form.querySelector('[name="open_in_iframe"]')?.checked ? 1 : 0, group_id: form.querySelector('[name="group_id"]')?.value || ((state.groups.find(g => !g.is_folder) || {}).id || 0), page_id: state.activePageId, source_type: state.userLoggedIn ? 'custom' : 'local' };
             await CanvasManager.addItem(data);
             if (!continueAdding) this.close();
             else ['title','url','describe','text_icon','icon'].forEach(n => { const el = form.querySelector('[name="' + n + '"]'); if (el) el.value = ''; });
@@ -1203,6 +1480,13 @@ const BM_App = (() => {
                 }
                 else values[n] = el.value;
             });
+            if (!state.userLoggedIn) {
+                GuestData.saveSettings(values);
+                Theme.applyWallpaper();
+                Search.applySavedEngine();
+                Toast.showToast('设置已保存到本地', 'success');
+                return;
+            }
             try {
                 const res = await api('PUT', '/settings', values);
                 if (!res.ok) throw new Error('Save failed');
@@ -1245,6 +1529,14 @@ const BM_App = (() => {
         async addPage() {
             const title = prompt('输入分类页名称:');
             if (!title) return;
+            if (!state.userLoggedIn) {
+                const page = { id: 'local_page_' + Date.now(), title, icon: title.charAt(0), sort_order: state.pages.length, is_default: 0 };
+                GuestData.addPage(page);
+                Sidebar.renderPages();
+                PageSwitcher.switchTo(String(page.id));
+                Toast.showToast('分类页已保存到本地', 'success');
+                return;
+            }
             try {
                 const res = await api('POST', '/pages', { title, icon: title.charAt(0) });
                 if (!res.ok) throw new Error('API error');
@@ -1269,6 +1561,24 @@ const BM_App = (() => {
                     pagesContainer.scrollTop = pagesContainer.scrollHeight;
                 }
             } catch(e) { Toast.showToast('创建失败', 'error'); }
+        },
+        renderPages() {
+            const pagesContainer = document.getElementById('bmSidebarPages');
+            if (!pagesContainer) return;
+            const addBtn = document.getElementById('bmSidebarAddPage');
+            pagesContainer.querySelectorAll('.bm-sidebar-page:not(.bm-sidebar-add-page)').forEach(el => el.remove());
+            state.pages.forEach(page => {
+                const pageEl = document.createElement('div');
+                pageEl.className = 'bm-sidebar-page' + (String(page.id) === String(state.activePageId) ? ' is-active' : '');
+                pageEl.setAttribute('data-page-id', page.id);
+                pageEl.setAttribute('data-page-title', page.title || '');
+                pageEl.setAttribute('data-is-default', page.is_default ? '1' : '0');
+                pageEl.innerHTML = '<span class="bm-sidebar-page-icon">' + (page.icon || (page.title || '?').charAt(0)) + '</span><span class="bm-sidebar-page-title">' + (page.title || '') + '</span>';
+                pageEl.addEventListener('click', () => PageSwitcher.switchTo(String(page.id)));
+                pageEl.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); this.showPageContextMenu(e, pageEl); });
+                if (addBtn) pagesContainer.insertBefore(pageEl, addBtn);
+                else pagesContainer.appendChild(pageEl);
+            });
         },
         showPageContextMenu(e, pageEl) {
             const pageId = pageEl.getAttribute('data-page-id');
@@ -1302,24 +1612,71 @@ const BM_App = (() => {
                 if (i) { e.preventDefault(); e.stopPropagation(); this.showDockMenu(e, i); }
             });
         },
+        renderItems() {
+            const dockInner = document.getElementById('bmDockInner');
+            if (!dockInner) return;
+            dockInner.innerHTML = '';
+            (state.dockItems || []).forEach(item => {
+                let iconHtml = '';
+                if (item.icon) {
+                    iconHtml = '<img src="' + item.icon + '" alt="" loading="lazy">';
+                } else if (item.text_icon) {
+                    iconHtml = '<span class="bm-dock-text-icon" style="background:' + (item.bg_color || '#6366f1') + '">' + (item.text_icon || '?').charAt(0) + '</span>';
+                } else {
+                    iconHtml = '<span class="bm-dock-text-icon" style="background:#94a3b8;">' + (item.title || '?').charAt(0) + '</span>';
+                }
+                const dockItem = document.createElement('div');
+                dockItem.className = 'bm-dock-item';
+                dockItem.setAttribute('data-id', item.id);
+                dockItem.setAttribute('data-url', item.url || '');
+                dockItem.setAttribute('data-title', item.title || '');
+                dockItem.innerHTML = '<div class="bm-dock-item-icon">' + iconHtml + '</div>';
+                dockInner.appendChild(dockItem);
+            });
+        },
         async addToDock(itemId) {
+            const cardEl = document.querySelector('.bm-item[data-id="' + itemId + '"]');
+            const title = cardEl?.querySelector('.bm-item-name')?.textContent || '';
+            const url = cardEl?.getAttribute('data-url') || '';
+            const iconImg = cardEl?.querySelector('.bm-item-icon-box img');
+            const letterEl = cardEl?.querySelector('.bm-item-letter');
+            let iconHtml = '';
+            let iconSrc = '';
+            let textIcon = '';
+            let bgColor = '#6366f1';
+            if (iconImg) {
+                iconHtml = '<img src="' + iconImg.src + '" alt="" loading="lazy">';
+                iconSrc = iconImg.src;
+            } else if (letterEl) {
+                iconHtml = letterEl.outerHTML;
+                textIcon = letterEl.textContent.trim();
+                bgColor = letterEl.style.background || letterEl.style.backgroundColor || '#6366f1';
+            } else {
+                iconHtml = '<span class="bm-dock-text-icon" style="background:#94a3b8;">' + (title || '?').charAt(0) + '</span>';
+                textIcon = (title || '?').charAt(0);
+                bgColor = '#94a3b8';
+            }
+            if (!state.userLoggedIn) {
+                var dockData = { id: itemId, title: title, url: url, icon: iconSrc, text_icon: textIcon, bg_color: bgColor };
+                GuestData.addDockItem(dockData);
+                state.dockItems.push(dockData);
+                const dockInner = document.getElementById('bmDockInner');
+                if (dockInner) {
+                    const dockItem = document.createElement('div');
+                    dockItem.className = 'bm-dock-item';
+                    dockItem.setAttribute('data-id', itemId);
+                    dockItem.setAttribute('data-url', url);
+                    dockItem.setAttribute('data-title', title);
+                    dockItem.innerHTML = '<div class="bm-dock-item-icon">' + iconHtml + '</div>';
+                    dockInner.appendChild(dockItem);
+                }
+                Toast.showToast('已添加到Dock', 'success');
+                return;
+            }
             try {
                 const res = await api('PUT', '/dock/add/' + itemId);
                 if (!res.ok) throw new Error('API error');
                 const data = await res.json();
-                const cardEl = document.querySelector('.bm-item[data-id="' + itemId + '"]');
-                const title = cardEl?.querySelector('.bm-item-name')?.textContent || '';
-                const url = cardEl?.getAttribute('data-url') || '';
-                const iconImg = cardEl?.querySelector('.bm-item-icon-box img');
-                const letterEl = cardEl?.querySelector('.bm-item-letter');
-                let iconHtml = '';
-                if (iconImg) {
-                    iconHtml = '<img src="' + iconImg.src + '" alt="" loading="lazy">';
-                } else if (letterEl) {
-                    iconHtml = letterEl.outerHTML;
-                } else {
-                    iconHtml = '<span class="bm-dock-text-icon" style="background:#94a3b8;">' + (title || '?').charAt(0) + '</span>';
-                }
                 const dockInner = document.getElementById('bmDockInner');
                 if (dockInner) {
                     const dockItem = document.createElement('div');
@@ -1334,6 +1691,14 @@ const BM_App = (() => {
             } catch(e) { Toast.showToast('操作失败', 'error'); }
         },
         async removeFromDock(itemId) {
+            if (!state.userLoggedIn) {
+                GuestData.removeDockItem(itemId);
+                state.dockItems = state.dockItems.filter(function(d) { return d.id !== itemId; });
+                const el = document.querySelector('.bm-dock-item[data-id="' + itemId + '"]');
+                if (el) el.remove();
+                Toast.showToast('已从Dock移除', 'success');
+                return;
+            }
             try {
                 const res = await api('PUT', '/dock/remove/' + itemId);
                 if (!res.ok) throw new Error('API error');
@@ -1387,7 +1752,7 @@ const BM_App = (() => {
             const blur = state.settings['wallpaper.blur'] ?? 20;
             const overlay = state.settings['wallpaper.overlay'] ?? 15;
             const filterStr = 'blur(' + blur + 'px) brightness(' + (100 - overlay) + '%)';
-            const base = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;background-size:cover;background-position:center;background-repeat:no-repeat;filter:' + filterStr + ';';
+            const base = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat;filter:' + filterStr + ';';
             switch(wt) {
                 case 'color': w.style.cssText = base + 'background-color:' + wv; break;
                 case 'gradient': {
@@ -1446,10 +1811,28 @@ const BM_App = (() => {
         state.pages = data.pages || [];
         state.dockItems = data.dock_items || [];
         state.userLoggedIn = !!data.user_logged_in;
-        state.activePageId = data.active_page_id || (state.pages.length > 0 ? state.pages[0].id : 0);
+        state.userId = data.current_user?.user_id || bmVars.userId || 0;
+        state.hasData = data.has_data;
+        if (!state.userLoggedIn) {
+            var gd = GuestData.load();
+            if (gd) {
+                state.pages = gd.pages || [];
+                state.groups = gd.groups || [];
+                state.navItems = gd.nav_items || {};
+                Object.assign(state.settings, gd.settings || {});
+                state.dockItems = gd.dock_items || [];
+            }
+        }
+        if (!state.userLoggedIn && state.pages.length > 0) {
+            state.activePageId = state.pages[0].id;
+        } else {
+            state.activePageId = data.active_page_id || (state.pages.length > 0 ? state.pages[0].id : 0);
+        }
         state.currentUser = data.current_user || {};
         renderPage();
         PageSwitcher.renderPage();
+        Sidebar.renderPages();
+        Dock.renderItems();
         Theme.applyWallpaper();
         Search.applySavedEngine();
     }
@@ -1467,8 +1850,24 @@ const BM_App = (() => {
                 state.settings = {};
                 state.activePageId = pageEl.getAttribute('data-active-page-id') || '0';
             }
+            if (!state.userLoggedIn) {
+                var gd = GuestData.load();
+                if (gd) {
+                    state.pages = gd.pages || [];
+                    state.groups = gd.groups || [];
+                    state.navItems = gd.nav_items || {};
+                    Object.assign(state.settings, gd.settings || {});
+                    state.dockItems = gd.dock_items || [];
+                    if (state.pages.length > 0) {
+                        state.activePageId = state.pages[0].id;
+                    }
+                }
+            }
             renderPage();
-            LocalStorage.getAll().forEach(item => CanvasManager.renderItem(item));
+            PageSwitcher.renderPage();
+            Sidebar.renderPages();
+            Dock.renderItems();
+            Theme.applyWallpaper();
             Search.applySavedEngine();
         }
     }
@@ -1478,7 +1877,8 @@ const BM_App = (() => {
         state.pageId = pageEl.getAttribute('data-page-id') || '0';
         state.activePageId = pageEl.getAttribute('data-active-page-id') || '0';
         state.userLoggedIn = bmVars.userLoggedIn || false;
-        LocalStorage.init(); Modal.init(); Clock.init(); Search.init();
+        state.userId = bmVars.userId || 0;
+        GuestData.migrateOldLocalData(); Modal.init(); Clock.init(); Search.init();
         ContextMenu.init(); DragSort.init(); PageSwitcher.init();
         SettingsPanel.init(); Sidebar.init(); Dock.init(); Theme.init();
         CanvasManager.init(); BookmarkPicker.init(); MemoCard.init();
@@ -1488,6 +1888,11 @@ const BM_App = (() => {
         if (bmVars.initData) {
             applyInitData(bmVars.initData);
             delete bmVars.initData;
+            if (state.userLoggedIn && GuestData.hasData()) {
+                if (confirm('检测到本地有未同步的数据，是否同步到服务器？')) {
+                    GuestData.syncToServer();
+                }
+            }
         } else {
             fetchInitialData();
         }

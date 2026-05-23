@@ -16,7 +16,7 @@ $wallpaper_blur = $s['wallpaper.blur'] ?? 20;
 $wallpaper_overlay = $s['wallpaper.overlay'] ?? 15;
 
 $filter_str = 'blur(' . intval($wallpaper_blur) . 'px) brightness(' . (100 - intval($wallpaper_overlay)) . '%)';
-$base_style = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;background-size:cover;background-position:center;background-repeat:no-repeat;filter:' . $filter_str . ';';
+$base_style = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat;filter:' . $filter_str . ';';
 
 $wallpaper_style = '';
 switch ($wallpaper_type) {
