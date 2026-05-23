@@ -3,8 +3,13 @@ const MemoCard = {
     pad: null,
     activeNoteId: null,
 
-    init() {
-        this.loadFromStorage();
+    async init() {
+        if (typeof bmVars !== 'undefined' && bmVars.userLoggedIn) {
+            await this.loadFromServer();
+        }
+        if (!this.pad) {
+            this.loadFromStorage();
+        }
         if (!this.pad) {
             this.pad = { color: '#f59e0b', notes: [] };
             this.persist();
@@ -21,8 +26,38 @@ const MemoCard = {
         }
     },
 
+    async loadFromServer() {
+        if (typeof bmVars === 'undefined' || !bmVars.userLoggedIn) return;
+        try {
+            const res = await fetch(bmVars.restUrl + '/memo', {
+                headers: { 'X-WP-Nonce': bmVars.ajax_nonce }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && (data.color || data.notes)) {
+                this.pad = { color: data.color || '#f59e0b', notes: data.notes || [] };
+            }
+        } catch (e) {
+            this.pad = null;
+        }
+    },
+
+    async saveToServer() {
+        if (typeof bmVars === 'undefined' || !bmVars.userLoggedIn) return;
+        try {
+            await fetch(bmVars.restUrl + '/memo', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': bmVars.ajax_nonce },
+                body: JSON.stringify({ color: this.pad.color, notes: this.pad.notes })
+            });
+        } catch (e) {}
+    },
+
     persist() {
         localStorage.setItem(this.KEY, JSON.stringify(this.pad));
+        if (typeof bmVars !== 'undefined' && bmVars.userLoggedIn) {
+            this.saveToServer();
+        }
     },
 
     getLatestNote() {
@@ -192,5 +227,19 @@ const MemoCard = {
         const min = String(d.getMinutes()).padStart(2, '0');
         const sec = String(d.getSeconds()).padStart(2, '0');
         return y + '-' + m + '-' + day + ' ' + h + ':' + min + ':' + sec;
+    },
+
+    syncToServer() {
+        if (typeof bmVars === 'undefined' || !bmVars.userLoggedIn) return;
+        try {
+            const raw = localStorage.getItem(MemoCard.KEY);
+            if (!raw) return;
+            const data = JSON.parse(raw);
+            fetch(bmVars.restUrl + '/sync-local', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': bmVars.ajax_nonce },
+                body: JSON.stringify({ color: data.color, notes: data.notes })
+            });
+        } catch (e) {}
     },
 };

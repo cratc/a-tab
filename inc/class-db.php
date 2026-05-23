@@ -3,7 +3,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('BM_DB_VERSION', '2.3.0');
+define('BM_DB_VERSION', '3.0.0');
 
 class BM_DB {
 
@@ -38,6 +38,7 @@ class BM_DB {
         $table_pages = $this->get_table('pages');
         $sql_pages = "CREATE TABLE $table_pages (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id BIGINT UNSIGNED DEFAULT 0,
             title VARCHAR(200) NOT NULL DEFAULT '',
             icon VARCHAR(200) DEFAULT '',
             sort_order INT DEFAULT 0,
@@ -45,6 +46,7 @@ class BM_DB {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY  (id),
+            KEY idx_user (user_id),
             KEY idx_sort (sort_order)
         ) $charset_collate;";
         dbDelta($sql_pages);
@@ -52,6 +54,7 @@ class BM_DB {
         $table_nav_items = $this->get_table('nav_items');
         $sql_nav_items = "CREATE TABLE $table_nav_items (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id BIGINT UNSIGNED DEFAULT 0,
             title VARCHAR(200) NOT NULL DEFAULT '',
             url VARCHAR(500) NOT NULL DEFAULT '',
             icon VARCHAR(500) NOT NULL DEFAULT '',
@@ -73,6 +76,7 @@ class BM_DB {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY  (id),
+            KEY idx_user (user_id),
             KEY idx_page (page_id),
             KEY idx_group (group_id),
             KEY idx_status (status),
@@ -86,6 +90,7 @@ class BM_DB {
         $table_groups = $this->get_table('groups');
         $sql_groups = "CREATE TABLE $table_groups (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id BIGINT UNSIGNED DEFAULT 0,
             title VARCHAR(200) NOT NULL DEFAULT '',
             icon VARCHAR(200) DEFAULT 'fas fa-folder',
             page_id BIGINT UNSIGNED DEFAULT 0,
@@ -99,6 +104,7 @@ class BM_DB {
             text_color VARCHAR(20) DEFAULT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY  (id),
+            KEY idx_user (user_id),
             KEY idx_page (page_id)
         ) $charset_collate;";
         dbDelta($sql_groups);
@@ -106,13 +112,27 @@ class BM_DB {
         $table_nav_config = $this->get_table('nav_config');
         $sql_nav_config = "CREATE TABLE $table_nav_config (
             id INT NOT NULL AUTO_INCREMENT,
+            user_id BIGINT UNSIGNED DEFAULT 0,
             config_key VARCHAR(100) NOT NULL,
             config_value TEXT DEFAULT NULL,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY  (id),
-            UNIQUE KEY config_key (config_key)
+            UNIQUE KEY config_key_user (config_key, user_id)
         ) $charset_collate;";
         dbDelta($sql_nav_config);
+
+        $table_memos = $this->get_table('memos');
+        $sql_memos = "CREATE TABLE $table_memos (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            color VARCHAR(20) DEFAULT '#f59e0b',
+            notes TEXT DEFAULT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            KEY idx_user (user_id)
+        ) $charset_collate;";
+        dbDelta($sql_memos);
 
         $table_card_components = $this->get_table('card_components');
         $sql_card_components = "CREATE TABLE $table_card_components (
@@ -132,6 +152,7 @@ class BM_DB {
         dbDelta($sql_card_components);
 
         $this->migrate_add_page_id();
+        $this->migrate_add_user_id();
         update_option('bm_db_version', BM_DB_VERSION);
     }
 
@@ -161,40 +182,75 @@ class BM_DB {
         }
     }
 
-    public function insert_default_data() {
+    private function migrate_add_user_id() {
         global $wpdb;
 
-        $table_pages = $this->get_table('pages');
-        $existing_pages = $wpdb->get_var("SELECT COUNT(*) FROM {$table_pages}");
+        $tables_to_migrate = array(
+            'pages'     => array('after' => 'id'),
+            'nav_items' => array('after' => 'id'),
+            'groups'    => array('after' => 'id'),
+        );
 
-        if (intval($existing_pages) === 0) {
-            $wpdb->insert(
-                $table_pages,
-                array(
-                    'title'      => '默认',
-                    'icon'       => '🏠',
-                    'sort_order' => 0,
-                    'is_default' => 1,
-                ),
-                array('%s', '%s', '%d', '%d')
-            );
+        foreach ($tables_to_migrate as $name => $opts) {
+            $table = $this->get_table($name);
+            $col = $wpdb->get_results("SHOW COLUMNS FROM {$table} LIKE 'user_id'");
+            if (empty($col)) {
+                $wpdb->query("ALTER TABLE {$table} ADD COLUMN user_id BIGINT UNSIGNED DEFAULT 0 AFTER {$opts['after']}, ADD KEY idx_user (user_id)");
+            }
         }
+
+        $table_config = $this->get_table('nav_config');
+        $col_config = $wpdb->get_results("SHOW COLUMNS FROM {$table_config} LIKE 'user_id'");
+        if (empty($col_config)) {
+            $wpdb->query("ALTER TABLE {$table_config} ADD COLUMN user_id BIGINT UNSIGNED DEFAULT 0 AFTER id");
+        }
+
+        $old_unique = $wpdb->get_results("SHOW INDEX FROM {$table_config} WHERE Key_name = 'config_key'");
+        if (!empty($old_unique)) {
+            $wpdb->query("ALTER TABLE {$table_config} DROP INDEX config_key");
+        }
+        $new_unique = $wpdb->get_results("SHOW INDEX FROM {$table_config} WHERE Key_name = 'config_key_user'");
+        if (empty($new_unique)) {
+            $wpdb->query("ALTER TABLE {$table_config} ADD UNIQUE KEY config_key_user (config_key, user_id)");
+        }
+
+        $admin_id = $this->get_first_admin_id();
+        if ($admin_id) {
+            $wpdb->update($this->get_table('pages'), array('user_id' => $admin_id), array('user_id' => 0));
+            $wpdb->update($this->get_table('nav_items'), array('user_id' => $admin_id), array('user_id' => 0));
+            $wpdb->update($this->get_table('groups'), array('user_id' => $admin_id), array('user_id' => 0));
+        }
+    }
+
+    private function get_first_admin_id() {
+        $admins = get_users(array('role' => 'administrator', 'number' => 1, 'fields' => 'ID'));
+        return !empty($admins) ? absint($admins[0]) : 1;
+    }
+
+    public function insert_default_data() {
+        global $wpdb;
 
         $table_config = $this->get_table('nav_config');
 
         $config_defaults = array(
-            'sidebar.mode'       => 'always',
+            'sidebar.mode'        => 'always',
             'sidebar.active_page' => '1',
-            'dock.enabled'       => '1',
-            'dock.max_items'     => '8',
+            'dock.enabled'        => '1',
+            'dock.max_items'      => '8',
         );
 
         foreach ($config_defaults as $key => $value) {
-            $wpdb->query($wpdb->prepare(
-                "INSERT INTO {$table_config} (config_key, config_value) VALUES (%s, %s)
-                 ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)",
-                $key, $value
+            $existing = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table_config} WHERE config_key = %s AND user_id = 0",
+                $key
             ));
+            if (intval($existing) === 0) {
+                $wpdb->insert(
+                    $table_config,
+                    array('config_key' => $key, 'config_value' => $value, 'user_id' => 0),
+                    array('%s', '%s', '%d')
+                );
+            }
         }
     }
 
@@ -216,6 +272,7 @@ class BM_DB {
             $this->get_table('nav_items'),
             $this->get_table('groups'),
             $this->get_table('nav_config'),
+            $this->get_table('memos'),
             $this->get_table('card_components'),
         );
 

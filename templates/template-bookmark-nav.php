@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 try {
     $nav_manager = BM_Core::get_instance()->get_nav_manager();
     $wp_page_id = get_the_ID();
-    $data = $nav_manager->get_init_data($wp_page_id);
+    $data = $nav_manager->get_init_data($wp_page_id, null, get_current_user_id());
 } catch (Exception $e) {
     if (function_exists('error_log')) {
         error_log('BM Plugin template error: ' . $e->getMessage());
@@ -38,7 +38,7 @@ try {
         body.admin-bar .bm-nav-page { top: 32px; height: calc(100vh - 32px); }
         @media (max-width: 782px) { body.admin-bar .bm-nav-page { top: 46px; height: calc(100vh - 46px); } }
         .bm-nav-page{width:100vw;min-height:100vh;overflow-x:hidden;overflow-y:auto;position:relative}
-        .bm-wallpaper{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;background-size:cover;background-position:center;background-repeat:no-repeat}
+        .bm-wallpaper{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;background-size:cover;background-position:center;background-repeat:no-repeat;pointer-events:none}
         .bm-sidebar{position:fixed;top:0;left:0;width:72px;height:100vh;z-index:200;display:flex;flex-direction:column;padding:16px 0;overflow-y:auto;overflow-x:hidden;background:rgba(255,255,255,0.08);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border-right:1px solid rgba(255,255,255,0.12)}
         .bm-main-content{margin-left:72px;position:relative;z-index:1;min-height:100vh}
         .bm-dock-bar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:100}

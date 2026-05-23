@@ -51,12 +51,14 @@ class BM_Enqueue {
             'nonce' => wp_create_nonce('wp_rest'),
             'isOnenav' => bm_is_onenav_active(),
             'userLoggedIn' => is_user_logged_in(),
+            'userId' => get_current_user_id(),
         );
 
         $nav_manager = BM_Core::get_instance()->get_nav_manager();
         $wp_page_id = get_the_ID();
+        $user_id = get_current_user_id();
         if ($wp_page_id) {
-            $init_data = $nav_manager->get_init_data($wp_page_id);
+            $init_data = $nav_manager->get_init_data($wp_page_id, null, $user_id);
             $js_vars['initData'] = $init_data;
         }
 
